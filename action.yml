@@ -7,14 +7,27 @@ branding:
   icon: 'lock'
   color: 'gray-dark'
 runs:
-  using: 'docker'
-  image: 'docker://ghcr.io/sm-steel/setup-sops-age@sha256:e1fbe2965450b6c9997fd84f84659ae3da5aa19ab3b78f0598c762db9cb6bf9d'
-  # ${{ runner.temp }} / ${{ github.workspace }} are evaluated by the
-  # runner itself, on the host, before this container starts -- passing
-  # them as plain args is what lets entrypoint.sh recover the real
-  # runner-side path to add to GITHUB_PATH. See entrypoint.sh for why the
-  # container's own RUNNER_TEMP/GITHUB_WORKSPACE env vars can't be used for
-  # that (they're translated to container-internal mount points).
-  args:
-    - ${{ runner.temp }}
-    - ${{ github.workspace }}
+  # NOT `using: docker` -- see README.md's "GITHUB_PATH gotcha" section.
+  # A pure Docker container action has no access to the `github`/`runner`
+  # context in its own action.yml (confirmed: "Unrecognized named-value:
+  # 'runner'" / "'github'" at parse time), and RUNNER_TEMP/GITHUB_WORKSPACE
+  # *inside* such a container are translated to container-internal mount
+  # paths that don't exist on the runner once the container exits -- so a
+  # pure `using: docker` action genuinely cannot self-expose files on
+  # GITHUB_PATH for later native steps (see actions/runner#2522 and
+  # community discussion #168949). This one native composite step is what
+  # lets $RUNNER_TEMP resolve to the real host path, which it then bind
+  # mounts into the (still fully Docker-based, still pinned by digest)
+  # setup-sops-age image to pull the binaries out.
+  using: 'composite'
+  steps:
+    - name: Extract sops/age/age-keygen from the pinned setup-sops-age image
+      shell: bash
+      run: |
+        set -euo pipefail
+        DEST_ROOT="${RUNNER_TEMP:-${GITHUB_WORKSPACE:-/tmp}}"
+        DEST="${DEST_ROOT}/setup-sops-age-bin"
+        mkdir -p "${DEST}"
+        docker run --rm -v "${DEST}:/out" \
+          ghcr.io/sm-steel/setup-sops-age@sha256:0000000000000000000000000000000000000000000000000000000000000000
+        echo "${DEST}" >> "${GITHUB_PATH}"

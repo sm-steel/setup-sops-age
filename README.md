@@ -1,8 +1,9 @@
 # setup-sops-age
 
-A Docker-based GitHub Action that installs pinned, checksum-verified `sops`
-and `age`/`age-keygen` binaries and puts them on `$GITHUB_PATH`, so later
-plain `run:` steps in the same job can use them with no further setup.
+A GitHub Action, backed by a Docker image that bakes in pinned,
+checksum-verified `sops` and `age`/`age-keygen` binaries, that puts them on
+`$GITHUB_PATH` so later plain `run:` steps in the same job can use them with
+no further setup.
 
 This replaces the pattern of every consuming repo separately
 curl+checksum-installing `sops` (and, less commonly, `age`) itself.
@@ -25,7 +26,7 @@ checksums file to source from instead.
 ## Usage
 
 ```yaml
-- uses: sm-steel/setup-sops-age@<pinned-commit-sha> # v0.1.1
+- uses: sm-steel/setup-sops-age@<pinned-commit-sha> # v0.1.2
 - run: |
     sops --version --disable-version-check
     age --version
@@ -37,14 +38,15 @@ itself, per this fleet's usual third-party-action pinning convention.
 Resolve it the same way every other pin in the fleet is resolved:
 
 ```bash
-gh api repos/sm-steel/setup-sops-age/git/ref/tags/v0.1.1 --jq '.object.sha'
+gh api repos/sm-steel/setup-sops-age/git/ref/tags/v0.1.2 --jq '.object.sha'
 ```
 
 No login or extra secret is required to pull the underlying image: this
 repo (and its GHCR package) are public, so `secrets.GITHUB_TOKEN`'s default
-permissions are enough for any consumer, private or public. Verified for
-real by consuming this action, pinned by commit SHA, from a completely
-unrelated public scratch repo with no login step at all.
+permissions (or even no token at all) are enough for any consumer, private
+or public. Verified for real by consuming this action, pinned by commit
+SHA, from a completely unrelated public scratch repo with no login step at
+all.
 
 ## How it works
 
@@ -52,34 +54,59 @@ unrelated public scratch repo with no login step at all.
   checksum-verifies `sops` and `age`/`age-keygen`. The final stage is a
   plain `debian:bookworm-slim` (not distroless/scratch) — `entrypoint.sh`
   needs a real shell.
-- `entrypoint.sh` runs as the whole `using: docker` step, and copies the
-  three binaries out to a directory later `run:` steps (which execute
-  directly on the runner, not inside this container) can see.
-- `action.yml` references the built image by **digest**
-  (`docker://ghcr.io/sm-steel/setup-sops-age@sha256:<digest>`), not by tag,
-  so a consumer's pinned commit SHA is fully reproducible: the commit itself
+- `entrypoint.sh` is the image's `ENTRYPOINT`. It just copies the three
+  baked-in binaries to `/out` (wherever the caller bind-mounted) and
+  smoke-tests them.
+- `action.yml` is a **composite** action with one `run:` step (see below for
+  why it's `using: composite`, not `using: docker`). That step resolves the
+  real runner-side temp directory, bind-mounts it into the pinned
+  `setup-sops-age` image at `/out`, runs the image (which copies the
+  binaries into that mount), and appends the directory to `$GITHUB_PATH`.
+- The image itself is still referenced by **digest**
+  (`ghcr.io/sm-steel/setup-sops-age@sha256:<digest>`), not by tag, so a
+  consumer's pinned commit SHA is fully reproducible: the commit itself
   fixes exactly which image bytes run.
 
-### The GITHUB_PATH gotcha (why args, not env vars)
+### The GITHUB_PATH gotcha (why composite, not `using: docker`)
 
-The natural-looking approach — read `$RUNNER_TEMP` inside the container,
-write files there, append that same value to `$GITHUB_PATH` — is broken.
-Docker container actions get `RUNNER_TEMP`/`GITHUB_WORKSPACE` **translated**
-to container-internal mount points (e.g. `/github/runner_temp`), which do
-not exist on the runner itself once the container exits. This is a known,
-documented gap in GitHub Actions
-([community discussion #168949](https://github.com/orgs/community/discussions/168949)),
-and it was caught here by hand during verification, not assumed away: v0.1.0
-shipped with exactly this bug (`sops: command not found` in the very next
-step) and was superseded by v0.1.1.
+The obvious design — make this a plain `using: docker` action whose
+`entrypoint.sh` reads `$RUNNER_TEMP`, writes files there, and appends that
+same value to `$GITHUB_PATH` — does not work, for two independent, both
+empirically-confirmed reasons:
 
-The fix `action.yml` uses: pass `${{ runner.temp }}` and
-`${{ github.workspace }}` as plain CLI **args**. The runner evaluates those
-expressions itself, on the host, *before* starting the container — so their
-values are the real runner-side paths later steps will actually see.
-`entrypoint.sh` uses those args (`$1`/`$2`) as the text it writes into
-`GITHUB_PATH`, while still using the container-side `RUNNER_TEMP` env var to
-physically write the files (same bind mount, different name from inside).
+1. **A Docker container action's own `action.yml` has no access to the
+   `github`/`runner` context at all.** Passing `${{ runner.temp }}` /
+   `${{ github.workspace }}` as `runs.args` fails at parse time with
+   `Unrecognized named-value: 'runner'` / `'github'` — before the container
+   even starts.
+2. **Even if it did**, `RUNNER_TEMP`/`GITHUB_WORKSPACE` *inside* a running
+   Docker container action are translated to container-internal mount
+   points (e.g. `/github/runner_temp`), which don't exist on the runner
+   itself once the container exits. Writing that translated path into
+   `GITHUB_PATH` breaks every later `run:` step with "command not found".
+
+Both are known, documented gaps in GitHub Actions, not something specific
+to this repo — see
+[actions/runner#2522](https://github.com/actions/runner/issues/2522) and
+[community discussion #168949](https://github.com/orgs/community/discussions/168949).
+They were caught here by hand during verification, not assumed away:
+
+- **v0.1.0** shipped as a pure `using: docker` action reading
+  `$RUNNER_TEMP` directly — hit gap 2 (`sops: command not found` in the
+  very next step).
+- **v0.1.1** tried passing `${{ runner.temp }}`/`${{ github.workspace }}` as
+  `args` — hit gap 1 (the consuming workflow failed before the action even
+  ran).
+- **v0.1.2** is the real fix: `action.yml` is a `using: composite` action.
+  Its one `run:` step executes *natively* on the runner (not inside any
+  container), where `$RUNNER_TEMP` is simply correct — no translation, no
+  context restriction — and it explicitly `docker run -v
+  "$RUNNER_TEMP/...":/out"` the pinned image itself, so the binaries land
+  directly at a real, known runner-side path before `GITHUB_PATH` is ever
+  touched. Still fully Docker-based: the actual pinned, checksum-verified
+  binaries only ever exist inside the published container image;
+  `action.yml` just orchestrates pulling them out from a context that can
+  see both sides of the mount.
 
 ## Release procedure
 
