@@ -8,7 +8,7 @@ branding:
   color: 'gray-dark'
 runs:
   using: 'docker'
-  image: 'docker://ghcr.io/sm-steel/setup-sops-age@sha256:0000000000000000000000000000000000000000000000000000000000000000'
+  image: 'docker://ghcr.io/sm-steel/setup-sops-age@sha256:e1fbe2965450b6c9997fd84f84659ae3da5aa19ab3b78f0598c762db9cb6bf9d'
   # ${{ runner.temp }} / ${{ github.workspace }} are evaluated by the
   # runner itself, on the host, before this container starts -- passing
   # them as plain args is what lets entrypoint.sh recover the real
