@@ -29,5 +29,5 @@ runs:
         DEST="${DEST_ROOT}/setup-sops-age-bin"
         mkdir -p "${DEST}"
         docker run --rm -v "${DEST}:/out" \
-          ghcr.io/sm-steel/setup-sops-age@sha256:0000000000000000000000000000000000000000000000000000000000000000
+          ghcr.io/sm-steel/setup-sops-age@sha256:f6f15480c61db0b441945145913db4f0401a21ee69ae8a9bea84e5163956e5aa
         echo "${DEST}" >> "${GITHUB_PATH}"
