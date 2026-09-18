@@ -25,7 +25,7 @@ checksums file to source from instead.
 ## Usage
 
 ```yaml
-- uses: sm-steel/setup-sops-age@<pinned-commit-sha> # v0.1.0
+- uses: sm-steel/setup-sops-age@<pinned-commit-sha> # v0.1.1
 - run: |
     sops --version --disable-version-check
     age --version
@@ -37,12 +37,14 @@ itself, per this fleet's usual third-party-action pinning convention.
 Resolve it the same way every other pin in the fleet is resolved:
 
 ```bash
-gh api repos/sm-steel/setup-sops-age/git/ref/tags/v0.1.0 --jq '.object.sha'
+gh api repos/sm-steel/setup-sops-age/git/ref/tags/v0.1.1 --jq '.object.sha'
 ```
 
 No login or extra secret is required to pull the underlying image: this
 repo (and its GHCR package) are public, so `secrets.GITHUB_TOKEN`'s default
-permissions are enough for any consumer, private or public.
+permissions are enough for any consumer, private or public. Verified for
+real by consuming this action, pinned by commit SHA, from a completely
+unrelated public scratch repo with no login step at all.
 
 ## How it works
 
@@ -50,16 +52,34 @@ permissions are enough for any consumer, private or public.
   checksum-verifies `sops` and `age`/`age-keygen`. The final stage is a
   plain `debian:bookworm-slim` (not distroless/scratch) — `entrypoint.sh`
   needs a real shell.
-- `entrypoint.sh` runs as the whole `using: docker` step. GitHub Actions
-  bind-mounts `RUNNER_TEMP` (falling back to `GITHUB_WORKSPACE`) into the
-  container at the same path it has on the runner, so copying the binaries
-  there — then appending that path to `$GITHUB_PATH` — makes them usable by
-  later `run:` steps in the *same job*, which execute directly on the
-  runner, not inside this container.
+- `entrypoint.sh` runs as the whole `using: docker` step, and copies the
+  three binaries out to a directory later `run:` steps (which execute
+  directly on the runner, not inside this container) can see.
 - `action.yml` references the built image by **digest**
   (`docker://ghcr.io/sm-steel/setup-sops-age@sha256:<digest>`), not by tag,
   so a consumer's pinned commit SHA is fully reproducible: the commit itself
   fixes exactly which image bytes run.
+
+### The GITHUB_PATH gotcha (why args, not env vars)
+
+The natural-looking approach — read `$RUNNER_TEMP` inside the container,
+write files there, append that same value to `$GITHUB_PATH` — is broken.
+Docker container actions get `RUNNER_TEMP`/`GITHUB_WORKSPACE` **translated**
+to container-internal mount points (e.g. `/github/runner_temp`), which do
+not exist on the runner itself once the container exits. This is a known,
+documented gap in GitHub Actions
+([community discussion #168949](https://github.com/orgs/community/discussions/168949)),
+and it was caught here by hand during verification, not assumed away: v0.1.0
+shipped with exactly this bug (`sops: command not found` in the very next
+step) and was superseded by v0.1.1.
+
+The fix `action.yml` uses: pass `${{ runner.temp }}` and
+`${{ github.workspace }}` as plain CLI **args**. The runner evaluates those
+expressions itself, on the host, *before* starting the container — so their
+values are the real runner-side paths later steps will actually see.
+`entrypoint.sh` uses those args (`$1`/`$2`) as the text it writes into
+`GITHUB_PATH`, while still using the container-side `RUNNER_TEMP` env var to
+physically write the files (same bind mount, different name from inside).
 
 ## Release procedure
 
@@ -92,3 +112,15 @@ chicken-and-egg with a two-commit release:
    tag was moved, so a SHA resolved before step 4 is now stale.
 
 Every future release (`v0.2.0`, `v1.0.0`, ...) follows the same five steps.
+
+**Note on step 4's rebuild:** moving the tag re-triggers `release.yml`,
+which rebuilds and re-pushes the image — and Docker image builds are not
+byte-reproducible (the image config's embedded timestamp differs every
+build even with identical inputs), so this second build's digest will
+differ from the one just committed into `action.yml`. That's fine and
+expected: `action.yml` pins a specific digest directly
+(`@sha256:<digest>`), not the mutable `:X.Y.Z` image tag, and GHCR keeps a
+digest's manifest pullable even after no tag points to it anymore (nothing
+in this repo prunes untagged versions). Don't chase the tag-triggered
+rebuild's new digest into another commit — the one already committed is the
+real, final, pullable one.
