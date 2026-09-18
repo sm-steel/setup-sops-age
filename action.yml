@@ -8,4 +8,4 @@ branding:
   color: 'gray-dark'
 runs:
   using: 'docker'
-  image: 'docker://ghcr.io/sm-steel/setup-sops-age@sha256:0000000000000000000000000000000000000000000000000000000000000000'
+  image: 'docker://ghcr.io/sm-steel/setup-sops-age@sha256:0cf723202f561ea53af3a1715ff6f781cf5f009b185040c0d2c3418fe7fb59c1'
