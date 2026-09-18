@@ -1,0 +1,11 @@
+name: 'Setup sops + age'
+description: >
+  Installs pinned, checksum-verified sops and age/age-keygen binaries onto
+  GITHUB_PATH, so later plain `run:` steps in the same job can use them with
+  no further setup.
+branding:
+  icon: 'lock'
+  color: 'gray-dark'
+runs:
+  using: 'docker'
+  image: 'docker://ghcr.io/sm-steel/setup-sops-age@sha256:0000000000000000000000000000000000000000000000000000000000000000'
